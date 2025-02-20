@@ -5,3 +5,4 @@ Pillow>=10.0.0
 python-ffmpeg>=2.0.0
 pathlib>=1.0.1
 scipy
+moviepy
