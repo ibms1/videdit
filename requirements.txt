@@ -6,4 +6,3 @@ python-ffmpeg>=2.0.0
 pathlib>=1.0.1
 opencv-python
 scipy
-moviepy
