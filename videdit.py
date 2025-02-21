@@ -6,11 +6,13 @@ import os
 from datetime import datetime
 from pathlib import Path
 import shutil
+from scipy.signal import butter, filtfilt
+from moviepy.editor import VideoFileClip, AudioFileClip  # لإضافة الصوت
 
 def set_page_style():
     """Set custom page styling"""
     st.set_page_config(
-        page_title="Video Editor Pro",
+        page_title="Video Effects Pro",
         page_icon="🎬",
         layout="wide",
         initial_sidebar_state="expanded"
@@ -73,146 +75,110 @@ def set_page_style():
         </style>
     """, unsafe_allow_html=True)
 
-def process_frame_for_motion(frame, prev_frame, invert=False):
-    """Process frame for motion detection"""
-    if frame is None or prev_frame is None:
-        return None
+class RealisticEarthquake:
+    def __init__(self):
+        self.sample_rate = 30  # FPS
+        self.nyquist = self.sample_rate * 0.5
+        
+    def generate_seismic_motion(self, duration, magnitude):
+        time = np.linspace(0, duration, int(duration * self.sample_rate))
+    
+        # تحجيم magnitude من 0 إلى 1 إلى 1 إلى 8
+        scaled_magnitude = 1 + magnitude * 7  # 1 + (0 * 7) = 1, 1 + (1 * 7) = 8
+    
+        # استخدام المعامل fs للتعامل مع التطبيع تلقائياً
+        filter_output = butter(4, [0.5, 14.9], btype='band', fs=self.sample_rate)
+        b = filter_output[0]
+        a = filter_output[1]
+    
+        noise = np.random.normal(0, 1, len(time))
+        filtered_noise = filtfilt(b, a, noise)
+        amplitude = np.exp(scaled_magnitude) * 0.5  # تقليل التأثير لمنع الاهتزازات المفرطة
+        motion = filtered_noise * amplitude
+        return motion
+
+    def apply_effect(self, frame, dx, dy, angle, blur_amount):
+        height, width = frame.shape[:2]
+        
+        # تحديد محدودية حركة الكاميرا لمنع الإطار الأسود
+        dx = int(np.clip(dx, -width/10, width/10))
+        dy = int(np.clip(dy, -height/10, height/10))
+        angle = np.clip(angle, -5, 5)  # الحد من زاوية الدوران
+        
+        # تطبيق مصفوفة التحويل للدوران والإزاحة
+        M = cv2.getRotationMatrix2D((width/2, height/2), angle, 1.0)
+        M[0, 2] += dx
+        M[1, 2] += dy
+        
+        # تطبيق التحويلات
+        transformed = cv2.warpAffine(frame, M, (width, height), 
+                              borderMode=cv2.BORDER_REFLECT)
+        
+        # تطبيق ضبابية بسيطة فقط إذا كانت حركة الزلزال كبيرة
+        if blur_amount > 3:
+            kernel_size = int(min(blur_amount, 9))
+            if kernel_size % 2 == 0:  # يجب أن يكون الحجم فردي
+                kernel_size += 1
+            transformed = cv2.GaussianBlur(transformed, (kernel_size, kernel_size), 0)
+        
+        return transformed
+
+def earthquake_effect(video_path, output_path, magnitude=0.3, progress_bar=None):  # خفض القيمة الافتراضية للتأثير
+    video = cv2.VideoCapture(video_path)
+    total_frames = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
+    width = int(video.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = int(video.get(cv2.CAP_PROP_FPS))
+    
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+    
+    effect = RealisticEarthquake()
+    duration = total_frames / fps
+    
+    # تقليل شدة الاهتزازات 
+    magnitude = min(max(magnitude, 0.1), 0.5)  # تقييد الشدة بين 0.1 و 0.5
+    
+    x_motion = effect.generate_seismic_motion(duration, magnitude * 0.4)  # تقليل حركة X
+    y_motion = effect.generate_seismic_motion(duration, magnitude * 0.3)  # تقليل حركة Y 
+    rotation = effect.generate_seismic_motion(duration, magnitude * 0.05)  # تقليل الدوران بشكل كبير
     
     try:
-        gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        gray_prev_frame = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
-        diff = cv2.absdiff(gray_frame, gray_prev_frame)
-        _, motion_mask = cv2.threshold(diff, 25, 255, cv2.THRESH_BINARY)
-        result = cv2.bitwise_not(motion_mask) if not invert else motion_mask
-        return cv2.cvtColor(result, cv2.COLOR_GRAY2BGR)
-    except Exception as e:
-        st.error(f"Error processing frame: {str(e)}")
-        return None
-
-def video_to_frames(video_path):
-    """Convert video to frames"""
-    cap = cv2.VideoCapture(video_path)
-    frames = []
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        frames.append(frame)
-    cap.release()
-    return frames
-
-def frames_to_video(frames, output_path, fps, input_video_path=None):
-    """Convert frames to video and preserve audio if possible"""
-    try:
-        if not frames or len(frames) == 0:
-            raise ValueError("No frames to process")
+        frame_count = 0
+        while True:
+            ret, frame = video.read()
+            if not ret:
+                break
+                
+            if frame_count < len(x_motion):
+                dx = int(x_motion[frame_count])
+                dy = int(y_motion[frame_count])
+                angle = rotation[frame_count]
+                
+                motion_magnitude = np.sqrt(dx*dx + dy*dy)
+                blur_amount = min(max(motion_magnitude * 0.2, 1), 7)  # تقليل شدة التمويه
+                
+                result = effect.apply_effect(frame, dx, dy, angle, blur_amount)
+                out.write(result)
             
-        valid_frames = [f for f in frames if f is not None]
-        if not valid_frames:
-            raise ValueError("No valid frames found")
-            
-        height, width, _ = valid_frames[0].shape
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        temp_output = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
-        
-        out = cv2.VideoWriter(temp_output, fourcc, fps, (width, height))
-        for frame in valid_frames:
-            out.write(frame)
+            frame_count += 1
+            if progress_bar:
+                progress_bar.progress(min(frame_count / total_frames, 1.0))
+                
+    finally:
+        video.release()
         out.release()
         
-        shutil.copy2(temp_output, output_path)
-        
-        try:
-            os.unlink(temp_output)
-        except:
-            pass
-            
-    except Exception as e:
-        st.error(f"Error saving video: {str(e)}")
-        raise e
-
-def speed_up_video(video_path, speed_factor):
-    """Speed up video"""
-    if speed_factor <= 1:
-        return video_path
-        
-    cap = cv2.VideoCapture(video_path)
-    fps = int(cap.get(cv2.CAP_PROP_FPS))
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    
-    temp_output = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(temp_output, fourcc, fps, (width, height))
-    
-    frame_count = 0
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
-        if frame_count % int(speed_factor) == 0:
-            out.write(frame)
-        frame_count += 1
-    
-    cap.release()
-    out.release()
-    return temp_output
-
-def slow_motion(video_path, speed_factor):
-    """Add slow motion effect"""
-    if speed_factor <= 1:
-        return video_path
-        
-    cap = cv2.VideoCapture(video_path)
-    fps = int(cap.get(cv2.CAP_PROP_FPS))
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    
-    temp_output = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(temp_output, fourcc, fps//int(speed_factor), (width, height))
-    
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
-        for _ in range(int(speed_factor)):
-            out.write(frame)
-    
-    cap.release()
-    out.release()
-    return temp_output
-
-def reverse_video(video_path):
-    """Reverse video direction"""
-    cap = cv2.VideoCapture(video_path)
-    fps = int(cap.get(cv2.CAP_PROP_FPS))
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    
-    temp_output = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(temp_output, fourcc, fps, (width, height))
-    
-    frames = []
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
-        frames.append(frame)
-    
-    for frame in reversed(frames):
-        out.write(frame)
-    
-    cap.release()
-    out.release()
-    return temp_output
+    # إضافة الصوت للفيديو الناتج
+    try:
+        add_audio_to_video(output_path, video_path, output_path + "_temp.mp4")
+        os.replace(output_path + "_temp.mp4", output_path)
+    except Exception:
+        # في حالة فشل إضافة الصوت، استخدم الفيديو بدون صوت
+        pass
 
 def flip_video(video_path, flip_type):
-    """
-    Flip video based on specified type
-    flip_types: Right, Left, Up, Down, Horizontal, Vertical
-    """
+    """Flip video based on specified type and preserve audio"""
     cap = cv2.VideoCapture(video_path)
     fps = int(cap.get(cv2.CAP_PROP_FPS))
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -221,7 +187,6 @@ def flip_video(video_path, flip_type):
     temp_output = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     
-    # تحديد أبعاد الإخراج بناءً على نوع الدوران
     if flip_type in ["Right", "Left"]:
         out = cv2.VideoWriter(temp_output, fourcc, fps, (height, width))
     else:
@@ -252,7 +217,201 @@ def flip_video(video_path, flip_type):
     
     cap.release()
     out.release()
+    
+    # إضافة الصوت إلى الفيديو المعالج
+    try:
+        add_audio_to_video(temp_output, video_path, temp_output + "_final.mp4")
+        os.replace(temp_output + "_final.mp4", temp_output)
+    except Exception:
+        pass
+    
     return temp_output
+
+def speed_up_video(video_path, output_path, speed_factor, progress_bar=None):
+    """Speed up video"""
+    if speed_factor <= 1:
+        shutil.copy2(video_path, output_path)
+        return
+    
+    cap = cv2.VideoCapture(video_path)
+    fps = int(cap.get(cv2.CAP_PROP_FPS))
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+    
+    frame_count = 0
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+        if frame_count % int(speed_factor) == 0:
+            out.write(frame)
+        frame_count += 1
+        if progress_bar:
+            progress_bar.progress(frame_count / int(cap.get(cv2.CAP_PROP_FRAME_COUNT)))
+    
+    cap.release()
+    out.release()
+
+def slow_motion(video_path, output_path, speed_factor, progress_bar=None):
+    """Add slow motion effect"""
+    if speed_factor <= 1:
+        shutil.copy2(video_path, output_path)
+        return
+    
+    cap = cv2.VideoCapture(video_path)
+    fps = int(cap.get(cv2.CAP_PROP_FPS))
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(output_path, fourcc, fps // int(speed_factor), (width, height))
+    
+    frame_count = 0
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+        for _ in range(int(speed_factor)):
+            out.write(frame)
+        frame_count += 1
+        if progress_bar:
+            progress_bar.progress(frame_count / int(cap.get(cv2.CAP_PROP_FRAME_COUNT)))
+    
+    cap.release()
+    out.release()
+
+def reverse_video(video_path, output_path, progress_bar=None):
+    """Reverse video direction"""
+    cap = cv2.VideoCapture(video_path)
+    fps = int(cap.get(cv2.CAP_PROP_FPS))
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+    
+    frames = []
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frames.append(frame)
+    
+    for frame in reversed(frames):
+        out.write(frame)
+        if progress_bar:
+            progress_bar.progress(len(frames) / int(cap.get(cv2.CAP_PROP_FRAME_COUNT)))
+    
+    cap.release()
+    out.release()
+
+def black_and_white_video(video_path, output_path, theme="normal", progress_bar=None):
+    """
+    Convert video to Black and White with theme options
+    theme options: "normal", "white_theme", "dark_theme", "inverted"
+    """
+    cap = cv2.VideoCapture(video_path)
+    fps = int(cap.get(cv2.CAP_PROP_FPS))
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+    
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+            
+        gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        
+        if theme == "normal":
+            # Standard grayscale
+            processed_frame = cv2.cvtColor(gray_frame, cv2.COLOR_GRAY2BGR)
+        elif theme == "inverted":
+            # Inverted grayscale (negative)
+            inverted = cv2.bitwise_not(gray_frame)
+            processed_frame = cv2.cvtColor(inverted, cv2.COLOR_GRAY2BGR)
+        elif theme == "white_theme":
+            # White theme: High brightness and contrast
+            brightened = cv2.convertScaleAbs(gray_frame, alpha=1.2, beta=30)
+            processed_frame = cv2.cvtColor(brightened, cv2.COLOR_GRAY2BGR)
+        elif theme == "dark_theme":
+            # Dark theme: Lower brightness, higher contrast
+            darkened = cv2.convertScaleAbs(gray_frame, alpha=1.3, beta=-30)
+            processed_frame = cv2.cvtColor(darkened, cv2.COLOR_GRAY2BGR)
+        
+        out.write(processed_frame)
+        
+        if progress_bar:
+            progress_bar.progress(cap.get(cv2.CAP_PROP_POS_FRAMES) / int(cap.get(cv2.CAP_PROP_FRAME_COUNT)))
+    
+    cap.release()
+    out.release()
+
+def sketch_effect(video_path, output_path, progress_bar=None):
+    """
+    Apply sketch effect to video and preserve audio.
+    """
+    # استخراج الصوت من الفيديو الأصلي
+    video_clip = VideoFileClip(video_path)
+    audio = video_clip.audio
+    
+    # معالجة الفيديو بدون صوت
+    temp_video_path = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
+    cap = cv2.VideoCapture(video_path)
+    fps = int(cap.get(cv2.CAP_PROP_FPS))
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(temp_video_path, fourcc, fps, (width, height))
+    
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    frame_count = 0
+    
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+            
+        # تحويل الإطار إلى نسخة رمادية
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        
+        # تأثير رسم تخطيطي بسيط
+        inverted = cv2.bitwise_not(gray)
+        blurred = cv2.GaussianBlur(inverted, (21, 21), 0)
+        inverted_blurred = cv2.bitwise_not(blurred)
+        sketch = cv2.divide(gray, inverted_blurred, scale=256.0)
+        processed_frame = cv2.cvtColor(sketch, cv2.COLOR_GRAY2BGR)
+        
+        out.write(processed_frame)
+        
+        # تحديث شريط التقدم
+        frame_count += 1
+        if progress_bar:
+            progress_bar.progress(frame_count / total_frames)
+    
+    cap.release()
+    out.release()
+    
+    # إضافة الصوت إلى الفيديو المعالج
+    add_audio_to_video(temp_video_path, video_path, output_path)
+    
+    # حذف الفيديو المؤقت
+    os.remove(temp_video_path)
+
+def add_audio_to_video(video_path, audio_path, output_path):
+    """
+    Combine video and audio using moviepy.
+    """
+    video_clip = VideoFileClip(video_path)
+    audio_clip = AudioFileClip(audio_path)
+    final_clip = video_clip.set_audio(audio_clip)
+    final_clip.write_videofile(output_path, codec="libx264", audio_codec="aac")
 
 def save_uploaded_file(uploaded_file):
     """Save uploaded file and return path"""
@@ -268,25 +427,30 @@ def save_uploaded_file(uploaded_file):
 def main():
     set_page_style()
     
-    # Header
     st.markdown("""
         <div class='title-container'>
-            <h1 style='font-size: 3rem; margin-bottom: 0.5rem;'>🎬 Video Editor Pro</h1>
-            <p style='font-size: 1.2rem; opacity: 0.9;'>Professional Video Editing Made Simple</p>
+            <h1 style='font-size: 3rem; margin-bottom: 0.5rem;'>🎬 Video Effects Pro</h1>
+            <p style='font-size: 1.2rem; opacity: 0.9;'>Advanced Video Effects Made Simple</p>
         </div>
     """, unsafe_allow_html=True)
     
-    # Upload Section
     col1, col2 = st.columns([1, 2])
     
     with col1:
         st.markdown("<div class='upload-container'>", unsafe_allow_html=True)
         st.markdown("### 📤 Upload Video")
         uploaded_video = st.file_uploader(
-            "Choose a video file",
+            "Choose a video file (max 25MB)",
             type=['mp4', 'avi', 'mov', 'mkv'],
-            help="Supported formats: MP4, AVI, MOV, MKV"
+            help="Supported formats: MP4, AVI, MOV, MKV",
+            accept_multiple_files=False,
+            key="video_uploader"
         )
+
+        if uploaded_video and uploaded_video.size > 25 * 1024 * 1024:  # 25 MB
+            st.error("File size exceeds 25 MB. Please upload a smaller file.")
+            uploaded_video = None  # تجاهل الملف إذا كان حجمه أكبر من 25 ميجابايت
+
         st.markdown("</div>", unsafe_allow_html=True)
     
     if uploaded_video:
@@ -294,155 +458,116 @@ def main():
             st.markdown("### 👁️ Preview")
             st.video(uploaded_video)
         
-        # Effects Section
         st.markdown("---")
-        st.markdown("### ⚙️ Video Effects")
+        st.markdown("### ⚙️ Effect Settings")
         
-        tabs = st.tabs(["🎨 Basic Effects", "🔧 Advanced Settings"])
+        effect_type = st.radio(
+            "Select Effect",
+            ["Earthquake", "Mirror/Flip", "Speed Up", "Slow Motion", "Reverse", "Black & White", "Sketch"],
+            horizontal=True
+        )
         
-        with tabs[0]:
-            col3, col4 = st.columns(2)
-            
-            with col3:
-                st.markdown("#### Motion Effects")
-                background_theme = st.radio(
-                    "🎭 Motion Background",
-                    ["None", "Light Theme", "Dark Theme"],
-                    horizontal=True
-                )
-                
-                st.markdown("#### Direction")
-                direction = st.radio(
-                    "🔄 Video Direction",
-                    ["Normal", "Reverse"],
-                    horizontal=True
-                )
-            
-            with col4:
-                st.markdown("#### Speed Settings")
-                speed_effect = st.radio(
-                    "⏱️ Playback Speed",
-                    ["Normal", "Speed Up", "Slow Motion"],
-                    horizontal=True
-                )
-                
-                st.markdown("#### Orientation")
-                flip_type = st.radio(
-                    "↔️ Flip Video",
-                    ["None", "Right", "Left", "Up", "Down", "Horizontal", "Vertical"],
-                    horizontal=True,
-                    help="""
-                    Right: تدوير 90 درجة يميناً
-                    Left: تدوير 90 درجة يساراً
-                    Up: قلب لأعلى
-                    Down: قلب لأسفل
-                    Horizontal: قلب أفقي
-                    Vertical: قلب عمودي
-                    """
-                )
+        if effect_type == "Mirror/Flip":
+            flip_type = st.radio(
+                "Flip Direction",
+                ["Right", "Left", "Up", "Down", "Horizontal", "Vertical"],
+                horizontal=True,
+                help="""
+                Right: Rotate 90° clockwise
+                Left: Rotate 90° counter-clockwise
+                Up: Flip vertically
+                Down: Flip vertically and rotate 180°
+                Horizontal: Mirror horizontally
+                Vertical: Mirror vertically
+                """
+            )
+        elif effect_type in ["Speed Up", "Slow Motion"]:
+            speed = st.slider(
+                "Speed Factor",
+                min_value=1.0,
+                max_value=4.0,
+                value=2.0,
+                step=0.1,
+                help="Values > 1 speed up, values < 1 slow down"
+            )
+        elif effect_type == "Black & White":
+            theme_option = st.radio(
+                "Color Theme",
+                ["Normal", "White Theme", "Dark Theme", "Inverted"],
+                horizontal=True,
+                help="""
+                Normal: Standard grayscale
+                White Theme: Brighter grayscale with higher contrast
+                Dark Theme: Darker grayscale with higher contrast
+                Inverted: Negative grayscale (black becomes white, white becomes black)
+                """
+            )
         
-        with tabs[1]:
-            if speed_effect != "Normal":
-                st.markdown("#### 🎚️ Speed Control")
-                speed = st.slider(
-                    "Adjust Speed Factor",
-                    min_value=1.0,
-                    max_value=4.0,
-                    value=2.0,
-                    step=0.1,
-                    help="Values > 1 speed up, values < 1 slow down"
-                )
-                st.info(f"Video will be {'sped up' if speed > 1 else 'slowed down'} by {speed}x")
-        
-        # Process Button
         st.markdown("---")
         col5, col6, col7 = st.columns([1, 2, 1])
         with col6:
             process_button = st.button(
                 "🚀 Process Video",
                 use_container_width=True,
-                help="Click to apply selected effects"
+                help="Click to apply selected effect"
             )
         
         if process_button:
             try:
-                # Show processing status
                 progress_bar = st.progress(0)
                 status = st.empty()
                 
-                # Save uploaded video
                 input_path = save_uploaded_file(uploaded_video)
-                current_path = input_path
+                output_path = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
                 
-                # Apply effects
-                if direction == "Reverse":
+                if effect_type == "Earthquake":
+                    status.text("Applying earthquake effect...")
+                    earthquake_effect(input_path, output_path, progress_bar=progress_bar)  # Use default magnitude
+                elif effect_type == "Mirror/Flip":
+                    status.text("Applying mirror/flip effect...")
+                    temp_output = flip_video(input_path, flip_type)
+                    shutil.copy2(temp_output, output_path)
+                    os.remove(temp_output)
+                elif effect_type == "Speed Up":
+                    status.text("Speeding up video...")
+                    speed_up_video(input_path, output_path, speed, progress_bar)
+                elif effect_type == "Slow Motion":
+                    status.text("Slowing down video...")
+                    slow_motion(input_path, output_path, speed, progress_bar)
+                elif effect_type == "Reverse":
                     status.text("Reversing video...")
-                    current_path = reverse_video(current_path)
-                    progress_bar.progress(0.25)
-                
-                if speed_effect != "Normal":
-                    status.text("Adjusting video speed...")
-                    if speed_effect == "Speed Up":
-                        current_path = speed_up_video(current_path, speed)
-                    else:
-                        current_path = slow_motion(current_path, speed)
-                    progress_bar.progress()
-                if flip_type != "None":
-                    status.text("Flipping video...")
-                    current_path = flip_video(current_path, flip_type)
-                    progress_bar.progress(0.75)
-                
-                if background_theme != "None":
-                    status.text("Applying motion effects...")
-                    try:
-                        frames = video_to_frames(current_path)
-                        processed_frames = []
-                        
-                        for i in range(1, len(frames)):
-                            try:
-                                processed_frame = process_frame_for_motion(
-                                    frames[i],
-                                    frames[i-1],
-                                    invert=(background_theme == "Light Theme")
-                                )
-                                if processed_frame is not None:
-                                    processed_frames.append(processed_frame)
-                                progress_bar.progress((i + 1) / len(frames))
-                            except Exception as e:
-                                st.error(f"Error processing frame {i}: {str(e)}")
-                                continue
-                        
-                        if processed_frames:
-                            final_output = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
-                            frames_to_video(processed_frames, final_output, 30, input_video_path=current_path)
-                            current_path = final_output
-                        else:
-                            st.error("No frames were processed successfully")
-                            
-                    except Exception as e:
-                        st.error(f"Error applying motion effects: {str(e)}")
-                        return
+                    reverse_video(input_path, output_path, progress_bar)
+                elif effect_type == "Black & White":
+                    status.text("Converting to black and white...")
+                    theme_mapping = {
+                        "Normal": "normal",
+                        "White Theme": "white_theme",
+                        "Dark Theme": "dark_theme", 
+                        "Inverted": "inverted"
+                    }
+                    theme = theme_mapping.get(theme_option, "normal")
+                    black_and_white_video(input_path, output_path, theme, progress_bar)
+                elif effect_type == "Sketch":
+                    status.text("Applying Sketch effect...")
+                    sketch_effect(input_path, output_path, progress_bar)
                 
                 progress_bar.progress(1.0)
                 status.empty()
                 
-                # Success message
                 st.markdown("""
                     <div class='success-message'>
                         ✨ Video processed successfully!
                     </div>
                 """, unsafe_allow_html=True)
                 
-                # Results section
                 st.markdown("### 🎉 Results")
                 result_col1, result_col2 = st.columns([2, 1])
                 
                 with result_col1:
-                    st.video(current_path)
+                    st.video(output_path)
                 
                 with result_col2:
-                    # Read the processed video file
-                    with open(current_path, "rb") as f:
+                    with open(output_path, "rb") as f:
                         processed_video_data = f.read()
                     
                     st.download_button(
@@ -453,9 +578,8 @@ def main():
                         use_container_width=True
                     )
                     
-                    # Show video information
                     st.markdown("#### 📊 Video Info")
-                    cap = cv2.VideoCapture(current_path)
+                    cap = cv2.VideoCapture(output_path)
                     fps = int(cap.get(cv2.CAP_PROP_FPS))
                     frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
                     duration = frame_count / fps
@@ -470,11 +594,9 @@ def main():
                         - **Total Frames:** {frame_count}
                     """)
                 
-                # Cleanup
                 try:
                     os.remove(input_path)
-                    if current_path != input_path:
-                        os.remove(current_path)
+                    os.remove(output_path)
                 except Exception:
                     pass
                 
@@ -488,8 +610,20 @@ def main():
 if __name__ == "__main__":
     main()
 
+# Hide Streamlit elements
+hide_streamlit_style = """
+    <style>
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    .stDeployButton {display:none;}
+    #stStreamlitLogo {display: none;}
+    </style>
+"""
+st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
-    
+
+
+
 
 hide_streamlit_style = """
             <style>
