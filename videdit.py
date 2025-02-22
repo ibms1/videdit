@@ -7,7 +7,8 @@ from datetime import datetime
 from pathlib import Path
 import shutil
 from scipy.signal import butter, filtfilt
-from moviepy.editor import VideoFileClip, AudioFileClip  # لإضافة الصوت
+import ffmpeg  # أضف هذا الاستيراد في بداية الملف بدلاً من moviepy
+from moviepy.editor import VideoFileClip
 
 def set_page_style():
     """Set custom page styling"""
@@ -406,12 +407,18 @@ def sketch_effect(video_path, output_path, progress_bar=None):
 
 def add_audio_to_video(video_path, audio_path, output_path):
     """
-    Combine video and audio using moviepy.
+    Combine video and audio using ffmpeg.
     """
-    video_clip = VideoFileClip(video_path)
-    audio_clip = AudioFileClip(audio_path)
-    final_clip = video_clip.set_audio(audio_clip)
-    final_clip.write_videofile(output_path, codec="libx264", audio_codec="aac")
+    try:
+        # دمج الفيديو والصوت باستخدام ffmpeg
+        stream = ffmpeg.input(video_path)
+        audio = ffmpeg.input(audio_path)
+        stream = ffmpeg.output(stream, audio, output_path, vcodec='copy', acodec='aac')
+        ffmpeg.run(stream, overwrite_output=True, capture_stdout=True, capture_stderr=True)
+    except ffmpeg.Error as e:
+        print('Error:', e.stderr.decode())
+        # في حالة حدوث خطأ، نسخ الفيديو بدون صوت
+        shutil.copy2(video_path, output_path)
 
 def save_uploaded_file(uploaded_file):
     """Save uploaded file and return path"""
