@@ -7,6 +7,16 @@ from datetime import datetime
 from pathlib import Path
 import shutil
 from scipy.signal import butter, filtfilt
+import logging
+
+logging.basicConfig(level=logging.INFO)
+
+# إضافة دالة لتنظيف الملفات المؤقتة
+def cleanup_temp_files(temp_dir):
+    try:
+        shutil.rmtree(temp_dir)
+    except Exception as e:
+        logging.error(f"Error cleaning up temp files: {e}")
 
 def set_page_style():
     """Set custom page styling"""
