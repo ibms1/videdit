@@ -7,8 +7,6 @@ from datetime import datetime
 from pathlib import Path
 import shutil
 from scipy.signal import butter, filtfilt
-import ffmpeg  # أضف هذا الاستيراد في بداية الملف بدلاً من moviepy
-from moviepy.editor import VideoFileClip
 
 def set_page_style():
     """Set custom page styling"""
@@ -169,17 +167,9 @@ def earthquake_effect(video_path, output_path, magnitude=0.3, progress_bar=None)
     finally:
         video.release()
         out.release()
-        
-    # إضافة الصوت للفيديو الناتج
-    try:
-        add_audio_to_video(output_path, video_path, output_path + "_temp.mp4")
-        os.replace(output_path + "_temp.mp4", output_path)
-    except Exception:
-        # في حالة فشل إضافة الصوت، استخدم الفيديو بدون صوت
-        pass
 
 def flip_video(video_path, flip_type):
-    """Flip video based on specified type and preserve audio"""
+    """Flip video based on specified type"""
     cap = cv2.VideoCapture(video_path)
     fps = int(cap.get(cv2.CAP_PROP_FPS))
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -218,13 +208,6 @@ def flip_video(video_path, flip_type):
     
     cap.release()
     out.release()
-    
-    # إضافة الصوت إلى الفيديو المعالج
-    try:
-        add_audio_to_video(temp_output, video_path, temp_output + "_final.mp4")
-        os.replace(temp_output + "_final.mp4", temp_output)
-    except Exception:
-        pass
     
     return temp_output
 
@@ -355,21 +338,15 @@ def black_and_white_video(video_path, output_path, theme="normal", progress_bar=
 
 def sketch_effect(video_path, output_path, progress_bar=None):
     """
-    Apply sketch effect to video and preserve audio.
+    Apply sketch effect to video
     """
-    # استخراج الصوت من الفيديو الأصلي
-    video_clip = VideoFileClip(video_path)
-    audio = video_clip.audio
-    
-    # معالجة الفيديو بدون صوت
-    temp_video_path = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
     cap = cv2.VideoCapture(video_path)
     fps = int(cap.get(cv2.CAP_PROP_FPS))
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(temp_video_path, fourcc, fps, (width, height))
+    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
     
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     frame_count = 0
@@ -379,10 +356,7 @@ def sketch_effect(video_path, output_path, progress_bar=None):
         if not ret:
             break
             
-        # تحويل الإطار إلى نسخة رمادية
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        
-        # تأثير رسم تخطيطي بسيط
         inverted = cv2.bitwise_not(gray)
         blurred = cv2.GaussianBlur(inverted, (21, 21), 0)
         inverted_blurred = cv2.bitwise_not(blurred)
@@ -391,34 +365,12 @@ def sketch_effect(video_path, output_path, progress_bar=None):
         
         out.write(processed_frame)
         
-        # تحديث شريط التقدم
         frame_count += 1
         if progress_bar:
             progress_bar.progress(frame_count / total_frames)
     
     cap.release()
     out.release()
-    
-    # إضافة الصوت إلى الفيديو المعالج
-    add_audio_to_video(temp_video_path, video_path, output_path)
-    
-    # حذف الفيديو المؤقت
-    os.remove(temp_video_path)
-
-def add_audio_to_video(video_path, audio_path, output_path):
-    """
-    Combine video and audio using ffmpeg.
-    """
-    try:
-        # دمج الفيديو والصوت باستخدام ffmpeg
-        stream = ffmpeg.input(video_path)
-        audio = ffmpeg.input(audio_path)
-        stream = ffmpeg.output(stream, audio, output_path, vcodec='copy', acodec='aac')
-        ffmpeg.run(stream, overwrite_output=True, capture_stdout=True, capture_stderr=True)
-    except ffmpeg.Error as e:
-        print('Error:', e.stderr.decode())
-        # في حالة حدوث خطأ، نسخ الفيديو بدون صوت
-        shutil.copy2(video_path, output_path)
 
 def save_uploaded_file(uploaded_file):
     """Save uploaded file and return path"""
@@ -627,10 +579,6 @@ hide_streamlit_style = """
     </style>
 """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
-
-
-
-
 
 hide_streamlit_style = """
             <style>
